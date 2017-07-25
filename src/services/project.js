@@ -1,5 +1,7 @@
 'use strict';
 
+const elm = require('../elm/Main.elm').Main;
+
 module.exports = function(ngModule) {
 
   ngModule.service('ProjectService', ProjectService);
@@ -7,6 +9,8 @@ module.exports = function(ngModule) {
   ProjectService.$inject = ['$http', '$q'];
 
   function ProjectService($http, $q) {
+
+    const worker = elm.worker({ token: TOKEN.join('') });
 
     function detail(repo) {
       const token = '?access_token=' + TOKEN.join('');
@@ -38,25 +42,10 @@ module.exports = function(ngModule) {
         });
     }
 
-    function getDate() {
-      const date = new Date();
-      date.setDate(date.getDate() - 7);
-      const year = date.getFullYear();
-      const month = `0${date.getMonth() + 1}`.slice(-2);
-      const day = `0${date.getDate()}`.slice(-2);
-      return `${year}-${month}-${day}`;
-    }
-
     function list() {
-      const date = getDate();
-      const url = 'https://api.github.com/search/repositories' +
-        `?q=created:>${date}` +
-        '&sort=stars' +
-        '&order=desc' +
-        `&access_token=${TOKEN.join('')}`;
+      worker.ports.getProjects.send();
 
-      return $http.get(url)
-        .then((result) => result.data.items);
+      return $q((resolve) => worker.ports.sendProjects.subscribe(resolve));
     }
 
     return {

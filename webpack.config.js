@@ -25,6 +25,10 @@ module.exports = {
       loader: 'ng-annotate-loader!babel-loader?presets[]=es2015&presets[]=stage-0',
       exclude: /node_modules/
     }, {
+      test: /\.elm$/,
+      exclude: [/elm-stuff/, /node_modules/],
+      loader: 'elm-webpack-loader'
+    }, {
       test: /\.html$/,
       loader: 'html-loader?conservativeCollapse'
     }, {
