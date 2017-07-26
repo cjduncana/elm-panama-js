@@ -1,14 +1,12 @@
-port module Main exposing (..)
+port module Main exposing (main)
 
-import Date exposing (Date)
-import Date.Extra.Config.Config_en_us exposing (config)
-import Date.Extra.Duration as DateExtra exposing (Duration(Day))
-import Date.Extra.Format as DateFormat
+import AllDict exposing (AllDict)
+import Date
 import Http exposing (Error)
-import Json.Decode as Decode exposing (Decoder, Value)
-import Json.Decode.Pipeline as Decode
+import Json.Decode as Decode exposing (Value)
 import Json.Encode as Encode
-import Task exposing (Task)
+import Project exposing (Project, Projects)
+import Task
 
 
 main : Program Flags Model Msg
@@ -16,13 +14,13 @@ main =
     Platform.programWithFlags
         { init = init
         , update = update
-        , subscriptions = subscriptions
+        , subscriptions = always subscriptions
         }
 
 
 init : Flags -> ( Model, Cmd msg )
 init { token } =
-    ( token, Cmd.none )
+    ( { token = token, projects = AllDict.empty .fullName }, Cmd.none )
 
 
 type alias Flags =
@@ -30,143 +28,91 @@ type alias Flags =
 
 
 type alias Model =
-    String
-
-
-type alias Project =
-    { language : Maybe String
-    , fullName : String
-    , owner : Maybe Owner
-    , name : String
-    , description : Maybe String
-    , openIssuesCount : Int
-    , forks : Int
-    , watchers : Int
-    , stargazersCount : Int
-    }
-
-
-type alias Projects =
-    List Project
-
-
-type alias Owner =
-    { htmlUrl : String
-    , avatarUrl : String
+    { token : String
+    , projects : AllDict Project
     }
 
 
 type Msg
     = ListProjectsSub
     | ProjectsRecieved (Result Error Projects)
+    | GetProjectSub (Maybe String)
+    | UpdatedProjectRecieved (Result Error Project)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update msg token =
+update msg model =
     case msg of
         ListProjectsSub ->
-            ( token
+            ( model
             , Date.now
-                |> Task.andThen (listProjectsTask token)
+                |> Task.andThen (Project.listProjectsTask model.token)
                 |> Task.attempt ProjectsRecieved
             )
 
-        ProjectsRecieved projects ->
-            ( token
-            , Result.withDefault [] projects
-                |> List.map projectEncoder
-                |> Encode.list
-                |> sendProjects
+        ProjectsRecieved projectsResult ->
+            Result.withDefault [] projectsResult
+                |> \projects ->
+                    ( { model
+                        | projects = AllDict.fromList model.projects projects
+                      }
+                    , List.map Project.projectEncoder projects
+                        |> Encode.list
+                        |> sendProjects
+                    )
+
+        GetProjectSub repoName ->
+            ( model
+            , Maybe.andThen (AllDict.get model.projects) repoName
+                |> Maybe.map (updateProjectCmd model.token)
+                |> Maybe.withDefault Cmd.none
             )
 
+        UpdatedProjectRecieved updatedProject ->
+            Result.toMaybe updatedProject
+                |> Maybe.map
+                    (\project ->
+                        ( { model
+                            | projects = AllDict.insert model.projects project
+                          }
+                        , Project.projectEncoder project
+                            |> sendProject
+                        )
+                    )
+                |> Maybe.withDefault ( model, Cmd.none )
 
-subscriptions : Model -> Sub Msg
-subscriptions _ =
-    getProjects (\_ -> ListProjectsSub)
+
+subscriptions : Sub Msg
+subscriptions =
+    Sub.batch
+        [ always ListProjectsSub
+            |> getProjects
+        , Decode.decodeValue Decode.string
+            >> Result.toMaybe
+            >> GetProjectSub
+            |> getProject
+        ]
 
 
 port getProjects : (Value -> msg) -> Sub msg
 
 
+port getProject : (Value -> msg) -> Sub msg
+
+
 port sendProjects : Value -> Cmd msg
 
 
-
--- Helper Functions
-
-
-listProjectsTask : String -> Date -> Task Error Projects
-listProjectsTask token date =
-    let
-        url =
-            [ ( "q", "created:>" ++ sevenDaysAgo date )
-            , ( "sort", "stars" )
-            , ( "order", "desc" )
-            , ( "access_token", token )
-            ]
-                |> List.map (\( key, value ) -> key ++ "=" ++ value)
-                |> String.join "&"
-                |> (++) "https://api.github.com/search/repositories?"
-    in
-        Decode.field "items" (Decode.list projectDecoder)
-            |> Http.get url
-            |> Http.toTask
+port sendProject : Value -> Cmd msg
 
 
-sevenDaysAgo : Date -> String
-sevenDaysAgo =
-    DateExtra.add Day -7
-        >> DateFormat.format config "%Y-%m-%d"
-
-
-projectDecoder : Decoder Project
-projectDecoder =
-    Decode.decode Project
-        |> Decode.optional "language" (Decode.nullable Decode.string) Nothing
-        |> Decode.required "full_name" Decode.string
-        |> Decode.optional "owner" (Decode.nullable ownerDecoder) Nothing
-        |> Decode.required "name" Decode.string
-        |> Decode.optional "description" (Decode.nullable Decode.string) Nothing
-        |> Decode.required "open_issues_count" Decode.int
-        |> Decode.required "forks" Decode.int
-        |> Decode.required "watchers" Decode.int
-        |> Decode.required "stargazers_count" Decode.int
-
-
-projectEncoder : Project -> Value
-projectEncoder project =
-    Encode.object
-        [ ( "language"
-          , Maybe.map Encode.string project.language
-                |> Maybe.withDefault Encode.null
-          )
-        , ( "full_name", Encode.string project.fullName )
-        , ( "owner"
-          , Maybe.map ownerEncoder project.owner
-                |> Maybe.withDefault Encode.null
-          )
-        , ( "name", Encode.string project.name )
-        , ( "description"
-          , Maybe.map Encode.string project.description
-                |> Maybe.withDefault Encode.null
-          )
-        , ( "open_issues_count", Encode.int project.openIssuesCount )
-        , ( "forks", Encode.int project.forks )
-        , ( "watchers", Encode.int project.watchers )
-        , ( "stargazers_count", Encode.int project.stargazersCount )
-        ]
-
-
-ownerDecoder : Decoder Owner
-ownerDecoder =
-    Decode.decode Owner
-        |> Decode.required "html_url" Decode.string
-        |> Decode.required "avatar_url" Decode.string
-
-
-ownerEncoder : Owner -> Value
-ownerEncoder owner =
-    Encode.object
-        [ ( "html_url", Encode.string owner.htmlUrl )
-        , ( "avatar_url", Encode.string owner.avatarUrl )
-        ]
+updateProjectCmd : String -> Project -> Cmd Msg
+updateProjectCmd token project =
+    Task.map5
+        (Project.updateProject project)
+        (Project.listContributorsTask project.contributorsUrl token)
+        (Project.listEventsTask project.eventsUrl token)
+        (Project.listIssuesTask project.url token)
+        (Project.listCommitsTask project.url token)
+        (Project.listLabelsTask project.url token)
+        |> Task.attempt UpdatedProjectRecieved

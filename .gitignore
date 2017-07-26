@@ -1,6 +1,9 @@
 docs
 node_modules
 
+# npm generated files
+npm-debug.log
+
 # elm-package generated files
 elm-stuff
 
