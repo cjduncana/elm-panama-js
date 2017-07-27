@@ -1,118 +1,90 @@
-port module Main exposing (main)
+module Main exposing (main)
 
-import AllDict exposing (AllDict)
-import Date
-import Http exposing (Error)
-import Json.Decode as Decode exposing (Value)
-import Json.Encode as Encode
-import Project exposing (Project, Projects)
+import AllDict
+import Model exposing (Flags, Model, Msg)
+import Navigation exposing (Location)
+import Project exposing (Project)
+import Routing
 import Task
+import View
 
 
 main : Program Flags Model Msg
 main =
-    Platform.programWithFlags
-        { init = init
+    Navigation.programWithFlags onLocationChange
+        { init = Model.init
         , update = update
-        , subscriptions = always subscriptions
+        , subscriptions = always Sub.none
+        , view = View.view
         }
 
 
-init : Flags -> ( Model, Cmd msg )
-init { token } =
-    ( { token = token, projects = AllDict.empty .fullName }, Cmd.none )
+onLocationChange : Location -> Msg
+onLocationChange location =
+    case Routing.fromLocation location of
+        Routing.HomeRoute ->
+            Model.GoToListPage
 
-
-type alias Flags =
-    { token : String }
-
-
-type alias Model =
-    { token : String
-    , projects : AllDict Project
-    }
-
-
-type Msg
-    = ListProjectsSub
-    | ProjectsRecieved (Result Error Projects)
-    | GetProjectSub (Maybe String)
-    | UpdatedProjectRecieved (Result Error Project)
+        Routing.DetailRoute fullName ->
+            Model.GoToDetailPage fullName
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        ListProjectsSub ->
-            ( model
-            , Date.now
-                |> Task.andThen (Project.listProjectsTask model.token)
-                |> Task.attempt ProjectsRecieved
-            )
-
-        ProjectsRecieved projectsResult ->
-            Result.withDefault [] projectsResult
-                |> \projects ->
-                    ( { model
-                        | projects = AllDict.fromList model.projects projects
-                      }
-                    , List.map Project.projectEncoder projects
-                        |> Encode.list
-                        |> sendProjects
+        Model.ProjectsRecieved projectsResult ->
+            ( Result.withDefault [] projectsResult, Cmd.none )
+                |> Tuple.mapFirst
+                    (\projects ->
+                        { model
+                            | projects =
+                                AllDict.fromList
+                                    model.projects
+                                    projects
+                            , projectList = projects
+                        }
                     )
 
-        GetProjectSub repoName ->
-            ( model
-            , Maybe.andThen (AllDict.get model.projects) repoName
-                |> Maybe.map (updateProjectCmd model.token)
-                |> Maybe.withDefault Cmd.none
-            )
-
-        UpdatedProjectRecieved updatedProject ->
-            Result.toMaybe updatedProject
-                |> Maybe.map
-                    (\project ->
-                        ( { model
-                            | projects = AllDict.insert model.projects project
-                          }
-                        , Project.projectEncoder project
-                            |> sendProject
+        Model.UpdatedProjectRecieved updatedProject ->
+            ( Result.toMaybe updatedProject, Cmd.none )
+                |> Tuple.mapFirst
+                    (Maybe.map
+                        (\project ->
+                            { model
+                                | projects =
+                                    AllDict.insert model.projects project
+                                , page =
+                                    Model.addProjectToDetailPage
+                                        model.page
+                                        project
+                            }
                         )
+                        >> Maybe.withDefault model
                     )
-                |> Maybe.withDefault ( model, Cmd.none )
 
+        Model.Navigate route ->
+            ( model, Routing.modifyUrl route )
 
-subscriptions : Sub Msg
-subscriptions =
-    Sub.batch
-        [ always ListProjectsSub
-            |> getProjects
-        , Decode.decodeValue Decode.string
-            >> Result.toMaybe
-            >> GetProjectSub
-            |> getProject
-        ]
+        Model.GoToListPage ->
+            ( { model | page = Model.ListPage }
+            , Model.getProjects model.token
+            )
 
+        Model.GoToDetailPage fullName ->
+            AllDict.get model.projects fullName
+                |> \maybeProject ->
+                    ( { model | page = Model.DetailPage maybeProject 0 }
+                    , Maybe.map (updateProjectCmd model.token) maybeProject
+                        |> Maybe.withDefault Cmd.none
+                    )
 
-port getProjects : (Value -> msg) -> Sub msg
-
-
-port getProject : (Value -> msg) -> Sub msg
-
-
-port sendProjects : Value -> Cmd msg
-
-
-port sendProject : Value -> Cmd msg
+        Model.SetTab activeIndex ->
+            ( { model | page = Model.setTabInDetailPage model.page activeIndex }
+            , Cmd.none
+            )
 
 
 updateProjectCmd : String -> Project -> Cmd Msg
-updateProjectCmd token project =
-    Task.map5
-        (Project.updateProject project)
-        (Project.listContributorsTask project.contributorsUrl token)
-        (Project.listEventsTask project.eventsUrl token)
-        (Project.listIssuesTask project.url token)
-        (Project.listCommitsTask project.url token)
-        (Project.listLabelsTask project.url token)
-        |> Task.attempt UpdatedProjectRecieved
+updateProjectCmd token =
+    Project.updateProjectTask token
+        >> Task.attempt Model.UpdatedProjectRecieved

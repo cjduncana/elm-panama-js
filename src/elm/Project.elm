@@ -1,19 +1,18 @@
 module Project
     exposing
-        ( Project
+        ( Commit
+        , Contributor
+        , Event
+        , Issue
+        , Owner
+        , Project
         , Projects
-        , listCommitsTask
-        , listContributorsTask
-        , listEventsTask
-        , listIssuesTask
-        , listLabelsTask
+        , getProject
         , listProjectsTask
-        , projectEncoder
-        , updateProject
+        , updateProjectTask
         )
 
 import Date exposing (Date)
-import Date.Extra as Date
 import Date.Extra.Config.Config_en_us exposing (config)
 import Date.Extra.Duration as DateExtra
 import Date.Extra.Format as DateFormat
@@ -21,8 +20,6 @@ import Http exposing (Error)
 import Json.Decode as Decode exposing (Decoder, Value)
 import Json.Decode.Extra as Decode
 import Json.Decode.Pipeline as Decode
-import Json.Encode as Encode
-import Json.Encode.Extra as Encode
 import Task exposing (Task)
 
 
@@ -46,20 +43,30 @@ updateProject project contributors events issues commits labels =
 
 listProjectsTask : String -> Date -> Task Error Projects
 listProjectsTask token date =
-    let
-        url =
-            [ ( "q", "created:>" ++ sevenDaysAgo date )
-            , ( "sort", "stars" )
-            , ( "order", "desc" )
-            , ( "access_token", token )
-            ]
+    Decode.field "items" (Decode.list projectDecoder)
+        |> Http.get
+            ([ ( "q", "created:>" ++ sevenDaysAgo date )
+             , ( "sort", "stars" )
+             , ( "order", "desc" )
+             , ( "access_token", token )
+             ]
                 |> List.map (\( key, value ) -> key ++ "=" ++ value)
                 |> String.join "&"
                 |> (++) "https://api.github.com/search/repositories?"
-    in
-        Decode.field "items" (Decode.list projectDecoder)
-            |> Http.get url
-            |> Http.toTask
+            )
+        |> Http.toTask
+
+
+getProject : String -> String -> Task Error Project
+getProject fullName token =
+    projectDecoder
+        |> Http.get
+            ("https://api.github.com/repos/"
+                ++ fullName
+                ++ "?access_token="
+                ++ token
+            )
+        |> Http.toTask
 
 
 listContributorsTask : String -> String -> Task Error Contributors
@@ -95,6 +102,17 @@ listLabelsTask url token =
     Decode.list (Decode.field "name" Decode.string)
         |> Http.get (url ++ "/labels?access_token=" ++ token)
         |> Http.toTask
+
+
+updateProjectTask : String -> Project -> Task Error Project
+updateProjectTask token project =
+    Task.map5
+        (updateProject project)
+        (listContributorsTask project.contributorsUrl token)
+        (listEventsTask project.eventsUrl token)
+        (listIssuesTask project.url token)
+        (listCommitsTask project.url token)
+        (listLabelsTask project.url token)
 
 
 sevenDaysAgo : Date -> String
@@ -232,56 +250,6 @@ projectDecoder =
         |> Decode.hardcoded []
 
 
-projectEncoder : Project -> Value
-projectEncoder project =
-    Encode.object
-        [ ( "id", Encode.int project.id )
-        , ( "language", Encode.maybe Encode.string project.language )
-        , ( "full_name", Encode.string project.fullName )
-        , ( "owner", Encode.maybe ownerEncoder project.owner )
-        , ( "name", Encode.string project.name )
-        , ( "description", Encode.maybe Encode.string project.description )
-        , ( "open_issues_count", Encode.int project.openIssuesCount )
-        , ( "forks", Encode.int project.forks )
-        , ( "watchers", Encode.int project.watchers )
-        , ( "stargazers_count", Encode.int project.stargazersCount )
-        , ( "default_branch", Encode.string project.defaultBranch )
-        , ( "size", Encode.int project.size )
-        , ( "created_at"
-          , Date.toUtcIsoString project.createdAt
-                |> Encode.string
-          )
-        , ( "updated_at"
-          , Date.toUtcIsoString project.updatedAt
-                |> Encode.string
-          )
-        , ( "pushed_at"
-          , Date.toUtcIsoString project.pushedAt
-                |> Encode.string
-          )
-        , ( "contributors"
-          , List.map contributorEncoder project.contributors
-                |> Encode.list
-          )
-        , ( "events"
-          , List.map eventEncoder project.events
-                |> Encode.list
-          )
-        , ( "issues"
-          , List.map issueEncoder project.issues
-                |> Encode.list
-          )
-        , ( "commits"
-          , List.map commitEncoder project.commits
-                |> Encode.list
-          )
-        , ( "labels"
-          , List.map Encode.string project.labels
-                |> Encode.list
-          )
-        ]
-
-
 ownerDecoder : Decoder Owner
 ownerDecoder =
     Decode.decode Owner
@@ -290,30 +258,12 @@ ownerDecoder =
         |> Decode.required "login" Decode.string
 
 
-ownerEncoder : Owner -> Value
-ownerEncoder owner =
-    Encode.object
-        [ ( "html_url", Encode.string owner.htmlUrl )
-        , ( "avatar_url", Encode.string owner.avatarUrl )
-        , ( "login", Encode.string owner.login )
-        ]
-
-
 contributorDecoder : Decoder Contributor
 contributorDecoder =
     Decode.decode Contributor
         |> Decode.required "html_url" Decode.string
         |> Decode.required "login" Decode.string
         |> Decode.required "avatar_url" Decode.string
-
-
-contributorEncoder : Contributor -> Value
-contributorEncoder contributor =
-    Encode.object
-        [ ( "html_url", Encode.string contributor.htmlUrl )
-        , ( "login", Encode.string contributor.login )
-        , ( "avatar_url", Encode.string contributor.avatarUrl )
-        ]
 
 
 eventDecoder : Decoder Event
@@ -325,19 +275,6 @@ eventDecoder =
         |> Decode.required "created_at" Decode.date
 
 
-eventEncoder : Event -> Value
-eventEncoder event =
-    Encode.object
-        [ ( "id", Encode.int event.id )
-        , ( "type", Encode.string event.type_ )
-        , ( "actor", Encode.string event.actor )
-        , ( "created_at"
-          , Date.toUtcIsoString event.createdAt
-                |> Encode.string
-          )
-        ]
-
-
 issueDecoder : Decoder Issue
 issueDecoder =
     Decode.decode Issue
@@ -346,20 +283,6 @@ issueDecoder =
         |> Decode.required "html_url" Decode.string
         |> Decode.required "title" Decode.string
         |> Decode.required "created_at" Decode.date
-
-
-issueEncoder : Issue -> Value
-issueEncoder issue =
-    Encode.object
-        [ ( "id", Encode.int issue.id )
-        , ( "state", Encode.string issue.state )
-        , ( "html_url", Encode.string issue.htmlUrl )
-        , ( "title", Encode.string issue.title )
-        , ( "created_at"
-          , Date.toUtcIsoString issue.createdAt
-                |> Encode.string
-          )
-        ]
 
 
 commitDecoder : Decoder Commit
@@ -382,22 +305,3 @@ commitDecoder =
             |> Decode.requiredAt [ "author", "html_url" ] Decode.string
             |> Decode.requiredAt [ "commit", "author", "name" ] Decode.string
             |> Decode.resolve
-
-
-commitEncoder : Commit -> Value
-commitEncoder commit =
-    Encode.object
-        [ ( "html_url", Encode.string commit.htmlUrl )
-        , ( "sha", Encode.string commit.sha )
-        , ( "author", authorEncoder commit.author )
-        , ( "message", Encode.string commit.message )
-        , ( "title", Encode.maybe Encode.string commit.title )
-        ]
-
-
-authorEncoder : Author -> Value
-authorEncoder author =
-    Encode.object
-        [ ( "html_url", Encode.string author.htmlUrl )
-        , ( "name", Encode.string author.name )
-        ]
